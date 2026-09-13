@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+@import 'uplot/dist/uPlot.min.css';
+
+@theme {
+  --color-root: #05070b;
+  --color-surface: #0d1117;
+  --color-well: #030712;
+  --color-line: #1f293d;
+  --color-pulse-bg: #05070b;
+  --color-pulse-panel: #0d1117;
+  --color-pulse-accent: #22d3ee;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+}
+
+/* Dark-first observability theme */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--color-root);
+  color: #e2e8f0;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.25);
+  color: #ecfeff;
+}
+
+/* Scrollbars: subtle dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(13, 17, 23, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 41, 61, 0.9);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(51, 65, 85, 0.9);
+}
+
+/* Brand pulse dot keyframes */
+@keyframes pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(34, 211, 238, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0);
+  }
+}
+
+.pulse-dot {
+  animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Topology node degraded pulse (amber) */
+@keyframes pulse-amber {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.node-degraded {
+  animation: pulse-amber 1.8s ease-in-out infinite;
+}
+
+/* uPlot canvas integration */
+.uplot canvas {
+  display: block;
+}
+
+.u-legend.u-off,
+.u-title.u-off {
+  display: none;
+}
+
+/* CDK drag preview (the ghost element while dragging) */
+.cdk-drag-preview {
+  opacity: 0.92;
+  transform: rotate(1deg);
+}
+
+.cdk-drag-animating {
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
