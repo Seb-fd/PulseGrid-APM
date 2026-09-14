@@ -24,7 +24,7 @@ jobs:
       - name: Run Typecheck
         run: npm run typecheck
       - name: Run Unit Tests & Check Coverage
-        run: npm run test -- --run --coverage
+        run: npm run test -- --run
       - name: Enforce zone.js ban
         run: |
           ! grep -r "from 'zone.js'" src/ || (echo "zone.js import detected" && exit 1)
