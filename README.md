@@ -1,15 +1,16 @@
 # PulseGrid APM
 
-PulseGrid APM is an enterprise-grade observability platform processing live global event
-streams from Wikimedia EventStreams. It maps real-time edits into network latency,
-throughput (RPS), and HTTP log entries while maintaining 60fps UI performance.
+PulseGrid APM is a high-throughput streaming Application Performance Monitoring (APM)
+dashboard built around a pluggable telemetry ingestion engine. Live event frames are
+normalized to CPU, memory, latency, and throughput series plus correlated HTTP-style logs,
+while the UI sustains 60fps rendering.
 
-Angular 19 zoneless standalone app (Signals + RxJS). Single project `pulsegrid-apm`;
+Angular 22 zoneless standalone app (Signals + RxJS). Single project `pulsegrid-apm`;
 entry `src/main.ts` → `app.config.ts` → `app.routes.ts`.
 
 ## Architecture
 
-- **Zoneless Angular 19:** `provideExperimentalZonelessChangeDetection()` in
+- **Angular 22 Zoneless:** `provideExperimentalZonelessChangeDetection()` in
   `src/app/app.config.ts`. No `zone.js` in `package.json`, `angular.json:polyfills`, or any
   `src/` import. Standalone `OnPush` components only, native control flow
   (`@if` / `@for (track id)` / `@switch`), `@defer (on viewport)` for below-fold widgets.
@@ -24,15 +25,22 @@ entry `src/main.ts` → `app.config.ts` → `app.routes.ts`.
   (`auditTime(16)` + `requestAnimationFrame` batching in the canvas directive, run outside
   change detection). Chart lib is uPlot (~40 kB). Logs render via CDK VirtualScroll.
 
-## Telemetry: Wikimedia WebSocket / SSE fallback adapter
+## Ingestion: pluggable pipeline + Default Live Stream Provider (Wikimedia)
 
-Live source is Wikipedia's public EventStreams `recentchange` feed, consumed by
-`WikimediaStreamService` (`src/app/core/services/wikimedia-stream.service.ts`):
+`TelemetryIngestionService` (`src/app/core/services/telemetry-ingestion.service.ts`) is a
+decoupled, multi-feed-ready pipeline: any live provider exposing event frames can be
+mapped through a pure adapter to `TelemetryMetric[]`, backpressured with `sampleTime(100)`,
+shared via `shareReplay`, and seamlessly failed over to simulation. Consumers
+(`CoreStore`, charts, logs, topology) never depend on a specific provider.
+
+The Default Live Stream Provider for demonstration is Wikimedia EventStreams
+`recentchange`, consumed by `WikimediaStreamService`
+(`src/app/core/services/wikimedia-stream.service.ts`):
 
 - **Primary transport:** WebSocket `wss://stream.wikimedia.org/v2/stream/recentchange`.
 - **Fallback transport:** SSE `https://stream.wikimedia.org/v2/stream/recentchange`
   (the officially documented EventStreams transport). WS terminal failure falls back to SSE;
-  dual failure falls back to the deterministic stochastic simulator.
+  dual failure falls back to the high-fidelity deterministic stochastic simulator.
 - **Batching:** 1 s event batches with watchdog + exponential backoff; shared cache for
   metric and log consumers.
 - **Adapter** (`src/app/core/services/wikimedia-adapter.ts`, pure and tested):
@@ -40,6 +48,9 @@ Live source is Wikipedia's public EventStreams `recentchange` feed, consumed by
   - `latency` is real — event-time lag (`now − event timestamp`, 35 ms quiet baseline);
   - `cpu` / `memory` are synthetic load indicators derived from throughput intensity;
   - `recentchange` events map to HTTP-style log entries (capped at 25 rows per batch).
+- **Alternate feeds:** other market or event streams (for example the legacy Binance
+  `!miniTicker@arr` feed) are supported only as alternate pluggable-feed examples through
+  the same adapter pattern — they are not active providers.
 - **Ingestion:** `TelemetryIngestionService` (Wikimedia default, sim fallback kept) and
   `LogIngestionService` (live Wikimedia logs, sim error logs + health tick kept).
 - **Status:** `CoreStore.connectionStatus` (`live` | `simulated` | `reconnecting`) drives the
@@ -50,6 +61,23 @@ Live source is Wikipedia's public EventStreams `recentchange` feed, consumed by
   Degraded, Red = Critical / Down. Metric views keep the
   `Values derived from Wikimedia Global Event Stream + simulator — not real infrastructure probes`
   footnote (data is synthetically mapped, not real infra).
+
+### Self-healing architecture
+
+- **5-second connection handshake timeout** (`WIKIMEDIA_CONNECT_TIMEOUT_MS`): a hung
+  handshake with no first frame fails fast instead of sticking in `reconnecting`.
+- **10-second silence watchdog** (`WIKIMEDIA_SILENCE_TIMEOUT_MS`) + 3 retries with
+  exponential backoff (1s, 2s, 4s … max 30s) before WS → SSE → simulator fallback.
+- **Socket teardown:** manual `Retry Live` unbinds subscriptions first so the refCounted
+  `shareReplay` closes the underlying `WebSocketSubject` (client close `1000`) and SSE
+  `EventSource`.
+- **Cache eviction:** `WikimediaStreamService.disconnect(url?)` drops the shared-connection
+  `Map` entry (single URL) or the whole cache, so the next `frames$()` opens a fresh socket.
+- **Seamless fallback:** terminal live failure resolves to the high-fidelity simulated
+  telemetry stream; charts continue without gaps and status flips to `SIMULATED`.
+- **Dynamic stream rebinding:** `AppComponent.retryLiveConnection()` re-reads `liveUrl`
+  (including E2E `?liveUrl=` overrides), evicts, and rebinds fresh `metrics$`/`logs$`
+  streams; status is explicitly set to `reconnecting` until live/sim resolves.
 
 ## Memory bounds
 
@@ -68,7 +96,8 @@ This keeps `computed()` windows O(n) cheap and prevents memory growth at 10 Hz c
   icon-only controls expose `aria-label`s, dashboard board and status legend are labelled
   regions.
 - Screen readers: `LiveAnnouncer` announces reorder / hide / show; charts expose `role="img"`
-  with threshold summaries; dynamic status uses live regions.
+  with threshold summaries; dynamic status uses live regions; log viewport uses
+  `role=log` without spamming live announcements.
 - Focus and motion: `:focus-visible` styles on all controls, `motion-reduce` disables shimmer
   placeholders and chart animation, emerald / amber / red status never relies on color alone
   (text labels + legend).
@@ -96,6 +125,6 @@ npm run build                                   # production build with bundle b
 npx playwright test e2e/<name>.spec.ts         # single E2E flow (baseURL :4200)
 ```
 
-E2E never hits live Wikimedia in CI. Force the simulator fallback and fault injection via
-query params: `/logs?liveUrl=ws://127.0.0.1:9/dead&scenario=outage`
+E2E never hits the live stream provider in CI. Force the simulator fallback and fault
+injection via query params: `/logs?liveUrl=ws://127.0.0.1:9/dead&scenario=outage`
 (scenarios: `normal` | `cpu-spike` | `memory-leak` | `outage` | `latency-burst`).

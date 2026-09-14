@@ -2,13 +2,13 @@
 
 > Status: **Ratified — SDD Phase 1**
 > Scope: All code in `src/`, all specs in `specs/`, all deltas in `changes/`
-> Stack: Angular 19+, TypeScript strict, Zoneless, Signals + RxJS, Tailwind CSS v4, Angular CDK
+> Stack: Angular 22 Zoneless, TypeScript strict, Signals + RxJS, Tailwind CSS v4, Angular CDK
 
 This document is non-negotiable. Any proposal in `changes/*` that violates these rules must be rejected or must explicitly amend this constitution via a new ADR.
 
 ## 1. Zoneless Is Mandatory
 
-1.1. The app MUST bootstrap with `provideExperimentalZonelessChangeDetection()` (Angular 19+).
+1.1. The app MUST bootstrap with `provideExperimentalZonelessChangeDetection()` (Angular 22 Zoneless).
 1.2. `zone.js` is FORBIDDEN:
 
 - MUST NOT appear in `package.json` dependencies.
@@ -56,12 +56,35 @@ This document is non-negotiable. Any proposal in `changes/*` that violates these
 5.2. Layout via CSS Grid / Flexbox. No component libraries for layout (CDK only for DnD, Overlay, Scrolling, A11y).
 5.3. Dark-first observability theme. All charts/logs/topology MUST be legible in dark mode.
 
-## 6. Data Sources (Hybrid — Ratified Decisions)
+## 6. Data Sources (Pluggable Ingestion — Ratified Decisions)
 
-6.1. **Primary live source:** Binance Public WebSocket `wss://stream.binance.com:9443/ws/!miniTicker@arr` (fallback `!ticker@arr`). No API key. Adapter normalizes trade/ticker frames → `TelemetryMetric[]`.
-6.2. **Simulated source:** Local stochastic RxJS stream (`interval` + seeded PRNG) synthesizing CPU spikes, memory leaks, node outages, 500-error bursts.
-6.3. **Fallback strategy (REQUIRED):** On WS `error`/close or 3 consecutive parse failures → auto-switch to simulator + show persistent UI status banner `LIVE | SIMULATED | RECONNECTING`. Auto-retry live with exponential backoff (1s, 2s, 4s … max 30s). Manual "Retry Live" button.
-6.4. No secrets in repo. Public WS URL is the only external endpoint allowed in Phase 1.
+6.1. **Pluggable ingestion engine (REQUIRED):** PulseGrid APM is a high-throughput
+streaming APM dashboard. `TelemetryIngestionService` is decoupled and multi-feed
+ready: any live provider exposing event frames can be normalized through a pure
+adapter to `TelemetryMetric[]`, backpressured (`sampleTime`/`auditTime`), shared via
+`shareReplay`, and failed over to simulation. UI consumers MUST NOT depend on a
+specific provider.
+6.2. **Default Live Stream Provider:** Wikimedia EventStreams `recentchange`
+(WebSocket `wss://stream.wikimedia.org/v2/stream/recentchange` primary, SSE
+`https://stream.wikimedia.org/v2/stream/recentchange` fallback). No API key. Adapter
+normalizes `recentchange` frames → `TelemetryMetric[]` (real edits/sec throughput, real
+event-time-lag latency, synthetic cpu/memory load indicators derived from throughput
+intensity). Alternate market or event feeds (for example the legacy Binance
+`!miniTicker@arr` feed) are permitted only as alternate pluggable-feed examples —
+never as active providers.
+6.3. **Simulated source:** Local stochastic RxJS stream (`interval` + seeded PRNG)
+synthesizing CPU spikes, memory leaks, node outages, 500-error bursts. This is the
+high-fidelity fallback when live terminally fails.
+6.4. **Self-healing strategy (REQUIRED):** 5-second connection handshake timeout
+(`WIKIMEDIA_CONNECT_TIMEOUT_MS`) + 10s silence watchdog; 3 retries with exponential
+backoff (1s, 2s, 4s … max 30s); WS → SSE → simulator fallback chain; socket teardown
+(refCounted `shareReplay` close) + shared-connection cache eviction
+(`disconnect(url?)`) on manual retry; dynamic stream rebinding (`retryLiveConnection`
+re-reads `liveUrl` and rebinds fresh `metrics$`/`logs$`). On WS `error`/close or
+terminal parse failure → auto-switch to simulator + show persistent UI status banner
+`LIVE | SIMULATED | RECONNECTING`. Manual "Retry Live" button REQUIRED.
+6.5. No secrets in repo. Public event-stream URL is the only external endpoint allowed
+in Phase 1.
 
 ## 7. Testing & Coverage Gates
 

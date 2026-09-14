@@ -1,13 +1,16 @@
 # PulseGrid APM — System Architecture
 
 > Status: Approved (Build decisions locked per user 2026-09-12)
-> Angular 19+ Standalone + Zoneless | Signals + RxJS | Tailwind v4 | CDK | Vitest + Playwright
+> Angular 22 Zoneless Standalone | Signals + RxJS | Tailwind v4 | CDK | Vitest + Playwright
 
 ## 1. Goals & Constraints
 
-- 60 FPS telemetry visualizer from high-frequency streams without jank in zoneless CD.
+- 60 FPS telemetry visualizer from high-frequency streams without jank in Angular 22
+  Zoneless CD.
 - 10k+ log rows without DOM blowup (CDK VirtualScroll).
-- Live Binance WS + deterministic simulator with seamless fallback.
+- Pluggable telemetry ingestion engine with Default Live Stream Provider (Wikimedia
+  EventStreams) + high-fidelity deterministic simulator with seamless self-healing
+  fallback.
 - Strict SDD traceability: spec → design interface → task → test.
 
 ## 2. DDD Modular Folder Structure
@@ -25,11 +28,12 @@ src/
         log-entry.model.ts
         service-node.model.ts
         alert-rule.model.ts
-      ingestion/
-        binance-ws.service.ts       # WebSocketSubject<BinanceFrame>, retry/backoff
-        stochastic-sim.service.ts   # interval-based PRNG fault injector
-        telemetry-ingestion.service.ts # merge, backpressure, normalize → TelemetryMetric[]
-        log-ingestion.service.ts    # synthetic + mapped error logs
+      services/
+        wikimedia-stream.service.ts   # Default Live Stream Provider: WS primary + SSE fallback, 5s handshake guard, retry/backoff, shared-cache eviction
+        wikimedia-adapter.ts          # pure recentchange → TelemetryMetric[] / LogEntry[] mapper
+        stochastic-sim.service.ts     # interval-based PRNG fault injector (high-fidelity fallback)
+        telemetry-ingestion.service.ts # pluggable pipeline: live → adapter → backpressure → shareReplay → sim fallback
+        log-ingestion.service.ts      # live Wikimedia logs + sim error logs + health tick
       store/
         core-store.service.ts       # signals: metrics, logs, nodes, connectionStatus
         alert-engine.service.ts     # rule evaluation over signal windows
@@ -72,28 +76,34 @@ Rules:
 ## 3. Data Flow Diagram (ASCII)
 
 ```text
-                    +-----------------------------+
-                    |   INGESTION LAYER (RxJS)    |
-                    |  Binance WS Subject         |
-                    |  wss://stream.binance.com:  |
-                    |  9443/ws/!miniTicker@arr    |
-                    +--------------+--------------+
-                                   | raw frames (100-1000 msg/s)
-                    +--------------+--------------+
-                    |  Stochastic Sim (RxJS)      |
-                    |  interval(250ms)+PRNG       |
-                    |  fault scenarios            |
-                    +--------------+--------------+
-                                   |
-                    +--------------v--------------+
-                    | TelemetryIngestionService   |
-                    |  merge(live, sim)           |
-                    |  sampleTime(100)/auditTime  |
-                    |  map(adapter→TelemetryMetric)|
-                    |  catchError→fallback(sim)   |
-                    |  retry({backoff 1s..30s})   |
-                    |  shareReplay({size:1})      |
-                    +--------------+--------------+
+              +--------------------------------------------------+
+              |           INGESTION LAYER (RxJS, pluggable)      |
+              |  Default Live Stream Provider: Wikimedia WS      |
+              |  wss://stream.wikimedia.org/v2/stream/recentchange|
+              |  + SSE fallback (official EventStreams transport)|
+              |  Alternate feeds (e.g. legacy Binance) plug in   |
+              |  via the same adapter pattern (not active)       |
+              +-----------------------+--------------------------+
+                                      | raw frames (bursts 100-1000 msg/s)
+                      +---------------+--------------+
+                      |  Stochastic Sim (RxJS)       |
+                      |  interval(250ms)+PRNG        |
+                      |  high-fidelity fallback      |
+                      |  fault scenarios             |
+                      +---------------+--------------+
+                                      |
+                    +-----------------v----------------+
+                    | TelemetryIngestionService        |
+                    |  pluggable pipeline:             |
+                    |  live → adapter →                |
+                    |  sampleTime(100)/auditTime       |
+                    |  catchError→fallback(sim)        |
+                    |  retry({backoff 1s..30s})        |
+                    |  5s handshake guard              |
+                    |  teardown + cache eviction       |
+                    |  dynamic stream rebinding        |
+                    |  shareReplay({size:1})           |
+                    +-----------------+----------------+
                                    | TelemetryMetric[] @ ~10Hz UI-safe
                     +--------------v--------------+
                     | STATE LAYER (Signals)       |
@@ -132,7 +142,12 @@ Rules:
 
    No `zone.js` in `package.json` or `angular.json:polyfills`.
 
-2. **Backpressure at ingestion:** raw WS (up to ~1k msg/s burst on `!miniTicker@arr`) is reduced via `sampleTime(100)` for charts, `auditTime(250)` for logs, `throttleTime` for topology health. Charts render at ≤60fps via `auditTime(16)` + `requestAnimationFrame` batching inside `MetricChartDirective` (runs outside CD via `runOutsideAngular` equivalent — zoneless-safe since signals notify only on committed frames).
+2. **Backpressure at ingestion:** raw provider bursts (up to ~1k msg/s on the Default
+   Live Stream Provider) are reduced via `sampleTime(100)` for charts, `auditTime(250)`
+   for logs, `throttleTime` for topology health. Charts render at ≤60fps via `auditTime(16)`
+   - `requestAnimationFrame` batching inside `MetricChartDirective` (runs outside CD via
+     `runOutsideAngular` equivalent — Angular 22 Zoneless-safe since signals notify only on
+     committed frames).
 
 3. **Bounded state:** `RingBuffer<T>` (capacity 300 per metric ≈ 30s @10Hz). `logs` capped at 5000 (drop oldest). Prevents memory growth + keeps `computed()` O(n) cheap.
 
@@ -144,12 +159,31 @@ Rules:
 
 7. **No `setInterval` in components.** All timers in ingestion services; components are pure signal readers.
 
-## 5. Ingestion Design (Locked)
+## 5. Ingestion Design (Locked): Pluggable Pipeline + Self-Healing
 
-- `BinanceWsService`: `webSocket<BinanceMiniTicker[]>({url, deserializer, openObserver, closeObserver})`. Heartbeat watchdog: if no frame in 10s → `RECONNECTING`.
-- `StochasticSimService`: `interval(250).pipe(map(prngStep))` emitting `TelemetryMetric` + correlated `LogEntry` bursts (CPU spike → WARN, outage → ERROR + `HealthState.down`).
-- `TelemetryIngestionService`: `merge(live$.pipe(map(binanceAdapter)), sim$.pipe(...))` gated by `connectionStatus` signal; `catchError` → sim; `retry` with `timer(backoff)`.
-- Binance adapter: derives pseudo `cpu/memory/latency/throughput` from ticker volatility/volume (documented as synthetic mapping — NOT real infra metrics; UI labels MUST show `derived from market stream` footnote to avoid misleading users).
+- `TelemetryIngestionService` (provider-agnostic): `live$.pipe(map(adapter))` with
+  `catchError` → cold simulator stream; `sampleTime(100)` caps store commits at ~10Hz;
+  `shareReplay({bufferSize: 1, refCount: true})` shares one subscription. Status
+  transitions: `reconnecting` → `live` (first frame) | `reconnecting` → `simulated`
+  (live terminal failure). `retryLive(url?)` evicts cache + resets to `reconnecting`.
+- Default Live Stream Provider `WikimediaStreamService`:
+  `webSocket({url, deserializer})` primary + official SSE `EventSource` fallback.
+  Self-healing: 5s handshake guard (`WIKIMEDIA_CONNECT_TIMEOUT_MS`, no first frame →
+  fail fast), 10s silence watchdog (`WIKIMEDIA_SILENCE_TIMEOUT_MS` → `RECONNECTING`),
+  3 WS retries with exponential backoff (1s, 2s, 4s … max 30s), then SSE (also 5s-guarded),
+  then simulator. Shared per-URL cache (`Map<string, Observable>`) for metrics + logs;
+  `disconnect(url?)` evicts one URL or all; callers unsubscribe first so refCounted
+  teardown closes the socket (client close `1000`) and SSE source before rebind.
+- Dynamic stream rebinding: `AppComponent.retryLiveConnection()` unbinds, evicts,
+  re-reads `liveUrl` (supports `?liveUrl=` E2E override), rebinds fresh
+  `metrics$`/`logs$`, and pins `reconnecting` until live/sim resolves.
+- `StochasticSimService`: `interval(250).pipe(map(prngStep))` emitting `TelemetryMetric` +
+  correlated `LogEntry` bursts (CPU spike → WARN, outage → ERROR + `HealthState.down`).
+- Wikimedia adapter: real edits/sec `throughput`, real event-time-lag `latency` (35ms
+  quiet baseline), synthetic `cpu`/`memory` load indicators derived from throughput
+  intensity (documented as synthetic mapping — NOT real infra metrics; UI labels MUST show
+  `derived from market stream` footnote to avoid misleading users). Alternate feeds
+  (e.g. legacy Binance `!miniTicker@arr`) follow the same adapter contract when plugged in.
 
 ## 6. State Design
 
@@ -170,5 +204,7 @@ Rules:
 
 ## 8. Open Risks
 
-- Binance WS rate-limit / firewall in CI → E2E MUST mock WS (`route.fulfill` / fake WS server), never hit live in CI.
+- Default Live Stream Provider rate-limit / firewall in CI → E2E MUST mock WS
+  (`route.fulfill` / fake WS server via `?liveUrl=`, never hit live in CI) and force sim
+  fallback + fault injection via `?scenario=`.
 - Bundle creep from chart lib → enforce `bundlesize` check in CI.
