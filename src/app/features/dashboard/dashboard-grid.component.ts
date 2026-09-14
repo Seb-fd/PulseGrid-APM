@@ -6,8 +6,9 @@ import {
   effect,
   inject,
   linkedSignal,
+  signal,
 } from '@angular/core';
-import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
+import { CdkDragDrop, CdkDragMove, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
 import { LiveAnnouncer } from '@angular/cdk/a11y';
 import { CoreStore } from '../../core/store/core-store.service';
 import {
@@ -23,6 +24,11 @@ import { DashboardMetricWidgetComponent } from './widgets/dashboard-metric-widge
 import { DashboardLogWidgetComponent } from './widgets/dashboard-log-widget.component';
 import { DashboardTopologyWidgetComponent } from './widgets/dashboard-topology-widget.component';
 import { DashboardIncidentWidgetComponent } from './widgets/dashboard-incident-widget.component';
+import {
+  DROP_MOVE_THROTTLE_MS,
+  centroidOfRect,
+  resolveDropIndexFromCentroid,
+} from '../../core/utils/dashboard-drop.util';
 
 const WIDGET_TITLES: Record<string, string> = {
   cpu: 'CPU',
@@ -92,6 +98,31 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
     DashboardIncidentWidgetComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      .drag-active {
+        box-shadow:
+          0 12px 32px rgb(0 0 0 / 0.45),
+          0 0 0 1px rgb(34 211 238 / 0.35);
+        border-color: rgb(34 211 238 / 0.45);
+      }
+      .drop-ghost {
+        min-height: 200px;
+        border-radius: 0.5rem;
+        border: 2px dashed rgb(34 211 238 / 0.6);
+        background: rgb(34 211 238 / 0.06);
+      }
+      ::ng-deep .cdk-drag-preview {
+        box-shadow:
+          0 16px 40px rgb(0 0 0 / 0.55),
+          0 0 0 1px rgb(34 211 238 / 0.4);
+        border-radius: 0.5rem;
+      }
+      ::ng-deep .cdk-drag-placeholder {
+        opacity: 0.9;
+      }
+    `,
+  ],
   template: `
     <section aria-label="Customizable dashboard">
       <div class="mb-4 flex items-end justify-between">
@@ -195,13 +226,24 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
         aria-label="Dashboard widgets, reorderable"
         class="grid grid-cols-1 gap-4 md:grid-cols-2"
       >
-        @for (widget of visibleWidgets(); track widget.id) {
+        @for (widget of visibleWidgets(); track widget.id; let i = $index) {
           <section
             cdkDrag
+            (cdkDragStarted)="onDragStarted(widget.id)"
+            (cdkDragMoved)="onDragMoved($event)"
+            (cdkDragReleased)="onDragEnded()"
+            [class.drag-active]="isDragging(widget.id)"
             [attr.data-testid]="'widget-' + widget.id"
+            [attr.data-preview]="isPreview(i)"
             [attr.aria-label]="title(widget.id)"
-            class="rounded-lg border border-slate-800 bg-[#0d1117] shadow-sm"
+            class="rounded-lg border border-slate-800 bg-[#0d1117] shadow-sm transition-shadow"
           >
+            <div
+              *cdkDragPlaceholder
+              class="drop-ghost"
+              data-testid="drop-preview"
+              aria-hidden="true"
+            ></div>
             <div class="flex items-center gap-2 border-b border-slate-800 p-3">
               <span
                 cdkDragHandle
@@ -334,6 +376,15 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
           </section>
         }
       </div>
+      @if (dropPreviewPosition() !== null) {
+        <p
+          data-testid="drop-preview-position"
+          aria-live="polite"
+          class="mt-2 font-mono text-[11px] leading-4 text-cyan-300"
+        >
+          Drop at row {{ dropPreviewPosition()?.row }}, column {{ dropPreviewPosition()?.col }}
+        </p>
+      }
       @if (hiddenWidgets().length > 0) {
         <div class="mt-4 flex flex-wrap items-center gap-2">
           <span class="font-mono text-[11px] leading-4 text-slate-400">Hidden widgets:</span>
@@ -396,6 +447,24 @@ export class DashboardGridComponent {
   );
 
   /**
+   * Delta 011: drag-preview state. `draggedWidgetId` drives the active-card shadow;
+   * `dropPreviewIndex` (canonical linear index) drives the dashed ghost position.
+   * Both are signals — no manual change detection, zoneless safe.
+   */
+  readonly draggedWidgetId = signal<string | null>(null);
+  readonly dropPreviewIndex = signal<number | null>(null);
+
+  /** Grid cell (1-based row/col, 2-col `md:` geometry) for the current preview. */
+  readonly dropPreviewPosition: Signal<{ row: number; col: number } | null> = computed(() => {
+    const preview = this.dropPreviewIndex();
+    if (preview === null) return null;
+    const columns = 2;
+    return { row: Math.floor(preview / columns) + 1, col: (preview % columns) + 1 };
+  });
+
+  private lastDragMoveAt = 0;
+
+  /**
    * Board counters composed from shared store selectors (delta 002) — no
    * independent rescans. `down` reads `healthNodes` (live health), never the
    * raw `nodes()` seed signal.
@@ -441,7 +510,93 @@ export class DashboardGridComponent {
     return METRIC_UNITS[id] ?? 'ms';
   }
 
+  isDragging(id: string): boolean {
+    return this.draggedWidgetId() === id;
+  }
+
+  isPreview(index: number): boolean {
+    return this.dropPreviewIndex() === index;
+  }
+
+  /** Drag start: mark the active card so the shadow feedback applies. */
+  onDragStarted(id: string): void {
+    this.draggedWidgetId.set(id);
+    this.dropPreviewIndex.set(null);
+    this.lastDragMoveAt = 0;
+  }
+
+  /**
+   * Centroid-snapped preview update, rAF-throttled via timestamp guard (no RxJS
+   * subscribe in components per constitution §3). Uses the dragged element's
+   * center — never the raw cursor — with hysteresis to avoid boundary flicker.
+   */
+  onDragMoved(event: CdkDragMove<DashboardWidgetLayout[]>): void {
+    const now =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    if (now - this.lastDragMoveAt < DROP_MOVE_THROTTLE_MS) return;
+    this.lastDragMoveAt = now;
+
+    let itemRect: { left: number; top: number; width: number; height: number } | null = null;
+    try {
+      const domRect = event.source.getRootElement().getBoundingClientRect();
+      itemRect = {
+        left: domRect.left,
+        top: domRect.top,
+        width: domRect.width,
+        height: domRect.height,
+      };
+    } catch {
+      return;
+    }
+    if (itemRect.width <= 0 || itemRect.height <= 0) return;
+
+    const board = this.readBoardGeometry();
+    if (board === null) return;
+    const centroid = centroidOfRect(itemRect);
+    const next = resolveDropIndexFromCentroid(centroid, board, this.dropPreviewIndex());
+    if (next !== this.dropPreviewIndex()) {
+      this.dropPreviewIndex.set(next);
+    }
+  }
+
+  /** Drag end without drop (escape/cancel): clear preview state. */
+  onDragEnded(): void {
+    this.draggedWidgetId.set(null);
+    this.dropPreviewIndex.set(null);
+  }
+
+  private readBoardGeometry(): {
+    boardLeft: number;
+    boardTop: number;
+    boardWidth: number;
+    boardHeight: number;
+    columns: number;
+    itemCount: number;
+  } | null {
+    try {
+      const doc = typeof document !== 'undefined' ? document : null;
+      const board = doc?.querySelector('[data-testid="dashboard-board"]') ?? null;
+      const rect = board?.getBoundingClientRect();
+      if (rect === undefined || rect.width <= 0 || rect.height <= 0) return null;
+      const count = this.visibleWidgets().length;
+      return {
+        boardLeft: rect.left,
+        boardTop: rect.top,
+        boardWidth: rect.width,
+        boardHeight: rect.height,
+        columns: 2,
+        itemCount: count,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   drop(event: CdkDragDrop<DashboardWidgetLayout[]>): void {
+    this.draggedWidgetId.set(null);
+    this.dropPreviewIndex.set(null);
     const widgets = [...this.layout().widgets];
     moveItemInArray(widgets, event.previousIndex, event.currentIndex);
     this.layout.set({ ...this.layout(), widgets });

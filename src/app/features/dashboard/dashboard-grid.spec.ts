@@ -315,3 +315,110 @@ describe('GIVEN DashboardGrid live status line (delta 008)', () => {
     );
   });
 });
+
+describe('GIVEN DashboardGrid drag preview (delta 011)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    announcer.announce.mockClear();
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: LiveAnnouncer, useValue: announcer },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  function create(): {
+    cmp: DashboardGridComponent;
+    el: HTMLElement;
+    fixture: ComponentFixture<DashboardGridComponent>;
+  } {
+    const fixture = TestBed.createComponent(DashboardGridComponent);
+    fixture.detectChanges();
+    TestBed.tick();
+    return { cmp: fixture.componentInstance, el: fixture.nativeElement as HTMLElement, fixture };
+  }
+
+  function settle(fixture: ComponentFixture<DashboardGridComponent>): void {
+    fixture.detectChanges();
+    TestBed.tick();
+    fixture.detectChanges();
+  }
+
+  function mockBoard(el: HTMLElement): void {
+    const board = el.querySelector('[data-testid="dashboard-board"]');
+    if (board !== null) {
+      board.getBoundingClientRect = (): DOMRect => new DOMRect(0, 0, 600, 800);
+    }
+  }
+
+  function dragEvent(left: number, top: number): never {
+    return {
+      source: {
+        getRootElement: () => ({
+          getBoundingClientRect: () => ({ left, top, width: 280, height: 180 }),
+        }),
+      },
+    } as never;
+  }
+
+  it('WHEN drag starts THEN active card is marked AND release clears it', () => {
+    const { cmp, fixture } = create();
+    expect(cmp.draggedWidgetId()).toBeNull();
+    cmp.onDragStarted('cpu');
+    expect(cmp.draggedWidgetId()).toBe('cpu');
+    expect(cmp.isDragging('cpu')).toBe(true);
+    expect(cmp.isDragging('memory')).toBe(false);
+    settle(fixture);
+    cmp.onDragEnded();
+    expect(cmp.draggedWidgetId()).toBeNull();
+    expect(cmp.dropPreviewIndex()).toBeNull();
+  });
+
+  it('WHEN preview index is set THEN cell position renders with Grid Column/Row', () => {
+    const { cmp, el, fixture } = create();
+    expect(el.querySelector('[data-testid="drop-preview-position"]')).toBeNull();
+    // Index 5 in a 2-column board → row 3, column 2.
+    cmp.dropPreviewIndex.set(5);
+    settle(fixture);
+    expect(cmp.dropPreviewPosition()).toEqual({ row: 3, col: 2 });
+    const badge = el.querySelector('[data-testid="drop-preview-position"]');
+    expect(badge?.textContent).toContain('row 3');
+    expect(badge?.textContent).toContain('column 2');
+    expect(cmp.isPreview(5)).toBe(true);
+    expect(cmp.isPreview(0)).toBe(false);
+  });
+
+  it('WHEN dragged element moves THEN centroid snaps preview AND rapid moves throttle', () => {
+    const { cmp, el } = create();
+    mockBoard(el);
+    const now = vi.spyOn(performance, 'now');
+    // Centroid of (left 320, width 280) → x=460 → col 1; (top 20, height 180) → y=110 → row 0 → index 1.
+    now.mockReturnValue(1000);
+    cmp.onDragMoved(dragEvent(320, 20));
+    expect(cmp.dropPreviewIndex()).toBe(1);
+    // Same timestamp → throttled, even though the centroid moved cells.
+    cmp.onDragMoved(dragEvent(10, 610));
+    expect(cmp.dropPreviewIndex()).toBe(1);
+    // Past the throttle window → recalculates to row 3 col 0 → index 6.
+    now.mockReturnValue(1000 + 64);
+    cmp.onDragMoved(dragEvent(10, 610));
+    expect(cmp.dropPreviewIndex()).toBe(6);
+  });
+
+  it('WHEN drop completes THEN preview state clears AND order still persists', () => {
+    const { cmp, fixture } = create();
+    cmp.onDragStarted('latency');
+    cmp.dropPreviewIndex.set(3);
+    cmp.drop({ previousIndex: 2, currentIndex: 0 } as never);
+    settle(fixture);
+    expect(cmp.draggedWidgetId()).toBeNull();
+    expect(cmp.dropPreviewIndex()).toBeNull();
+    expect(cmp.visibleWidgets().map((w) => w.id)[0]).toBe('latency');
+  });
+});
