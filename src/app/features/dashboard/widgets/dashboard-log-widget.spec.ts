@@ -1,4 +1,4 @@
-import { provideExperimentalZonelessChangeDetection } from '@angular/core';
+import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it, beforeEach } from 'vitest';
 import '../../../../test-helpers';
@@ -18,13 +18,13 @@ function entry(i: number): LogEntry {
 
 describe('GIVEN DashboardLogWidget (compact)', () => {
   beforeEach(() => {
-    TestBed.configureTestingModule({ providers: [provideExperimentalZonelessChangeDetection()] });
+    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
   });
 
   function create(): { cmp: DashboardLogWidgetComponent; el: HTMLElement } {
     const fixture = TestBed.createComponent(DashboardLogWidgetComponent);
     fixture.detectChanges();
-    TestBed.flushEffects();
+    TestBed.tick();
     return { cmp: fixture.componentInstance, el: fixture.nativeElement as HTMLElement };
   }
 

@@ -22,18 +22,21 @@ const COMPACT_LIMIT = 5;
         {{ firingCount() }} firing
       </span>
     </div>
-    @if (firingCount() > 0) {
-      <p
-        data-testid="dash-incident-banner"
-        role="alert"
-        class="mb-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[11px] leading-4 text-rose-300"
-      >
-        <span
-          class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(248,113,113,0.8)]"
-        ></span>
-        {{ firingCount() }} alert{{ firingCount() === 1 ? '' : 's' }} firing — check thresholds.
-      </p>
-    }
+    <div data-testid="dash-incident-alert-region" role="alert">
+      @if (firingCount() > 0) {
+        <p
+          data-testid="dash-incident-banner"
+          aria-atomic="true"
+          class="mb-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[11px] leading-4 text-rose-300"
+        >
+          <span
+            aria-hidden="true"
+            class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(248,113,113,0.8)]"
+          ></span>
+          {{ firingCount() }} alert{{ firingCount() === 1 ? '' : 's' }} firing — check thresholds.
+        </p>
+      }
+    </div>
     <ul data-testid="dash-incident-list" class="space-y-1.5">
       @for (incident of incidents(); track incident.id) {
         <li
@@ -71,9 +74,7 @@ export class DashboardIncidentWidgetComponent {
     [...this.store.incidents()].reverse().slice(0, COMPACT_LIMIT),
   );
 
-  readonly firingCount: Signal<number> = computed(
-    () => this.store.incidents().filter((i) => i.status === 'firing').length,
-  );
+  readonly firingCount: Signal<number> = this.store.activeAlertsCount;
 
   ruleName(ruleId: string): string {
     return this.store.rules().find((r) => r.id === ruleId)?.name ?? ruleId;

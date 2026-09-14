@@ -8,6 +8,7 @@ import {
   linkedSignal,
 } from '@angular/core';
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
+import { LiveAnnouncer } from '@angular/cdk/a11y';
 import { CoreStore } from '../../core/store/core-store.service';
 import {
   DEFAULT_DASHBOARD_LAYOUT,
@@ -17,6 +18,7 @@ import {
   type DashboardWidgetLayout,
 } from '../../core/models/dashboard-layout.model';
 import type { MetricKind, MetricUnit } from '../../core/models/telemetry-metric.model';
+import { METRIC_THRESHOLDS } from '../../core/models/metric-thresholds.model';
 import { DashboardMetricWidgetComponent } from './widgets/dashboard-metric-widget.component';
 import { DashboardLogWidgetComponent } from './widgets/dashboard-log-widget.component';
 import { DashboardTopologyWidgetComponent } from './widgets/dashboard-topology-widget.component';
@@ -39,6 +41,29 @@ const METRIC_UNITS: Record<string, MetricUnit> = {
   throughput: 'rps',
 };
 
+/** localStorage key for the dismissible dashboard overview banner (delta 007). */
+export const DASHBOARD_OVERVIEW_KEY = 'pg.dashboard.overview.v1';
+
+/** Storage-guarded read: first run / missing / blocked storage → visible. */
+export function readOverviewVisible(): boolean {
+  try {
+    const raw = localStorage.getItem(DASHBOARD_OVERVIEW_KEY);
+    if (raw === null) return true;
+    return raw !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/** Storage-guarded write: failures are swallowed (session still works). */
+export function writeOverviewVisible(visible: boolean): void {
+  try {
+    localStorage.setItem(DASHBOARD_OVERVIEW_KEY, visible ? '1' : '0');
+  } catch {
+    // Storage blocked — banner still works for the session.
+  }
+}
+
 const WIDGET_ICON_PATHS: Record<string, string> = {
   cpu: 'M3 12h4l3 8 4-16 3 8h4',
   memory: 'M4 7h16v10H4z M9 11h6v2H9z',
@@ -54,6 +79,7 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
  * FR-D1..D5: CDK DragDrop, visibility toggles, localStorage v1, @defer per widget.
  * Delta 004: each widget hosts its dashboard-local visual component.
  * Delta 006: system card chrome, inline-SVG icons, uniform 200px wells.
+ * Delta 007: dismissible system-overview banner (persisted `pg.dashboard.overview.v1`).
  */
 @Component({
   selector: 'app-dashboard-grid',
@@ -84,10 +110,89 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
           Reset layout
         </button>
       </div>
+      @if (showOverview()) {
+        <section
+          role="region"
+          aria-label="About PulseGrid APM"
+          data-testid="dashboard-overview"
+          class="mb-4 rounded-lg border border-slate-800 bg-[#0d1117] p-4 shadow-sm"
+        >
+          <div class="flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <h3 class="text-sm font-semibold tracking-tight text-slate-100">
+                What is PulseGrid APM?
+              </h3>
+              <p class="mt-1 text-xs leading-5 text-slate-300">
+                PulseGrid APM is an enterprise-grade observability platform processing live global
+                event streams from Wikimedia EventStreams. It maps real-time edits into network
+                latency, throughput (RPS), and HTTP log entries while maintaining 60fps UI
+                performance.
+              </p>
+              <p
+                data-testid="dashboard-live-status"
+                class="mt-1 font-mono text-[11px] leading-4 text-cyan-300"
+              >
+                {{ liveStatusText() }}
+              </p>
+              <ul aria-label="Status legend" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                <li class="flex items-center gap-1.5">
+                  <span aria-hidden="true" class="h-2 w-2 rounded-full bg-emerald-400"></span>
+                  <span class="text-slate-300">Emerald — Healthy</span>
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <span aria-hidden="true" class="h-2 w-2 rounded-full bg-amber-400"></span>
+                  <span class="text-slate-300">Amber — Degraded</span>
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <span aria-hidden="true" class="h-2 w-2 rounded-full bg-rose-500"></span>
+                  <span class="text-slate-300">Red — Critical / Down</span>
+                </li>
+              </ul>
+              <p
+                data-testid="overview-thresholds"
+                class="mt-2 font-mono text-[11px] leading-4 text-slate-400"
+              >
+                {{ overviewThresholds() }}
+              </p>
+            </div>
+            <button
+              type="button"
+              (click)="dismissOverview()"
+              data-testid="overview-dismiss"
+              aria-label="Dismiss overview"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 focus-visible:bg-slate-800 focus-visible:text-slate-200"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6L6 18 M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </section>
+      } @else {
+        <div class="mb-4">
+          <button
+            type="button"
+            (click)="restoreOverview()"
+            data-testid="overview-show"
+            class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+          >
+            What is PulseGrid?
+          </button>
+        </div>
+      }
       <div
         cdkDropList
         (cdkDropListDropped)="drop($event)"
         data-testid="dashboard-board"
+        aria-label="Dashboard widgets, reorderable"
         class="grid grid-cols-1 gap-4 md:grid-cols-2"
       >
         @for (widget of visibleWidgets(); track widget.id) {
@@ -148,7 +253,7 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
                   (click)="moveWidget(widget.id, -1)"
                   [attr.data-testid]="'move-' + widget.id + '-up'"
                   [attr.aria-label]="'Move ' + title(widget.id) + ' earlier'"
-                  class="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
+                  class="grid h-7 w-7 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 focus-visible:bg-slate-800 focus-visible:text-slate-200"
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -168,7 +273,7 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
                   (click)="moveWidget(widget.id, 1)"
                   [attr.data-testid]="'move-' + widget.id + '-down'"
                   [attr.aria-label]="'Move ' + title(widget.id) + ' later'"
-                  class="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
+                  class="grid h-7 w-7 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 focus-visible:bg-slate-800 focus-visible:text-slate-200"
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -187,7 +292,8 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
                   type="button"
                   (click)="toggleVisibility(widget.id)"
                   [attr.data-testid]="'hide-' + widget.id"
-                  class="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
+                  [attr.aria-label]="'Hide ' + title(widget.id)"
+                  class="grid h-7 w-7 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 focus-visible:bg-slate-800 focus-visible:text-slate-200"
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -220,7 +326,7 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
               </div>
             } @placeholder {
               <div
-                class="m-3 h-[200px] animate-pulse rounded-md bg-slate-800/40 ring-1 ring-white/5"
+                class="m-3 h-[200px] animate-pulse rounded-md bg-slate-800/40 ring-1 ring-white/5 motion-reduce:animate-none"
                 [attr.data-testid]="'placeholder-' + widget.id"
                 aria-hidden="true"
               ></div>
@@ -243,16 +349,43 @@ const WIDGET_ICON_PATHS: Record<string, string> = {
           }
         </div>
       }
-      <p class="mt-4 font-mono text-[11px] leading-4 text-slate-400">
-        Values derived from market stream + simulator — not real infrastructure probes.
-      </p>
     </section>
   `,
 })
 export class DashboardGridComponent {
   private readonly store = inject(CoreStore);
+  private readonly announcer = inject(LiveAnnouncer);
 
   readonly layout = linkedSignal<DashboardLayout>(() => readDashboardLayout());
+
+  /** Delta 007: overview banner visibility, persisted separately from layout. */
+  readonly showOverview = linkedSignal<boolean>(() => readOverviewVisible());
+
+  /**
+   * Delta 008: live-source status line inside the overview banner, composed
+   * from the shared connection-status signal (no subscribe, zoneless safe).
+   */
+  readonly liveStatusText: Signal<string> = computed(() => {
+    switch (this.store.connectionStatus()) {
+      case 'live':
+        return 'Live Status: Connected to Wikimedia Global Event Stream';
+      case 'simulated':
+        return 'Live Status: Simulated fallback — live Wikimedia stream unreachable';
+      case 'reconnecting':
+        return 'Live Status: Reconnecting to Wikimedia Global Event Stream…';
+    }
+  });
+
+  /** Threshold callout line rendered from `METRIC_THRESHOLDS` (single source). */
+  readonly overviewThresholds: Signal<string> = computed(() => {
+    const t = METRIC_THRESHOLDS;
+    return (
+      `Warn/Crit: CPU ${String(t.cpu.warn)}/${String(t.cpu.crit)}% · ` +
+      `Memory ${String(t.memory.warn)}/${String(t.memory.crit)}% · ` +
+      `Latency ${String(t.latency.warn)}/${String(t.latency.crit)}ms · ` +
+      `Throughput ${String(t.throughput.warn)}/${String(t.throughput.crit)}rps (low-is-bad)`
+    );
+  });
 
   readonly visibleWidgets: Signal<DashboardWidgetLayout[]> = computed(() =>
     this.layout().widgets.filter((w) => w.visible),
@@ -262,17 +395,28 @@ export class DashboardGridComponent {
     this.layout().widgets.filter((w) => !w.visible),
   );
 
+  /**
+   * Board counters composed from shared store selectors (delta 002) — no
+   * independent rescans. `down` reads `healthNodes` (live health), never the
+   * raw `nodes()` seed signal.
+   */
   readonly counts: Signal<{ metrics: number; logs: number; firing: number; down: number }> =
-    computed(() => ({
-      metrics: this.store.metrics().length,
-      logs: this.store.logs().length,
-      firing: this.store.incidents().filter((i) => i.status === 'firing').length,
-      down: this.store.nodes().filter((n) => n.health === 'down').length,
-    }));
+    computed(() => {
+      const byKind = this.store.metricsByKind();
+      return {
+        metrics: byKind.cpu + byKind.memory + byKind.latency + byKind.throughput,
+        logs: this.store.logs().length,
+        firing: this.store.activeAlertsCount(),
+        down: this.store.healthNodes().filter((n) => n.health === 'down').length,
+      };
+    });
 
   constructor() {
     effect(() => {
       writeDashboardLayout(this.layout());
+    });
+    effect(() => {
+      writeOverviewVisible(this.showOverview());
     });
   }
 
@@ -301,6 +445,12 @@ export class DashboardGridComponent {
     const widgets = [...this.layout().widgets];
     moveItemInArray(widgets, event.previousIndex, event.currentIndex);
     this.layout.set({ ...this.layout(), widgets });
+    const moved = widgets[event.currentIndex];
+    if (moved !== undefined) {
+      void this.announcer.announce(
+        `${this.title(moved.id)} moved to position ${String(event.currentIndex + 1)} of ${String(widgets.length)}`,
+      );
+    }
   }
 
   toggleVisibility(id: string): void {
@@ -308,6 +458,12 @@ export class DashboardGridComponent {
       w.id === id ? { ...w, visible: !w.visible } : w,
     );
     this.layout.set({ ...this.layout(), widgets });
+    const toggled = widgets.find((w) => w.id === id);
+    if (toggled !== undefined) {
+      void this.announcer.announce(
+        toggled.visible ? `${this.title(id)} shown` : `${this.title(id)} hidden`,
+      );
+    }
   }
 
   /** Keyboard/touch fallback: reorder without pointer drag. */
@@ -318,10 +474,23 @@ export class DashboardGridComponent {
     if (idx < 0 || next < 0 || next >= widgets.length) return;
     moveItemInArray(widgets, idx, next);
     this.layout.set({ ...this.layout(), widgets });
+    void this.announcer.announce(
+      `${this.title(id)} moved to position ${String(next + 1)} of ${String(widgets.length)}`,
+    );
   }
 
   resetLayout(): void {
     this.layout.set(DEFAULT_DASHBOARD_LAYOUT);
+  }
+
+  /** Delta 007: hide the overview banner (preference persists via effect). */
+  dismissOverview(): void {
+    this.showOverview.set(false);
+  }
+
+  /** Delta 007: re-show the overview banner after dismissal. */
+  restoreOverview(): void {
+    this.showOverview.set(true);
   }
 
   trackWidget(_index: number, widget: DashboardWidgetLayout): string {

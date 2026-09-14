@@ -107,3 +107,28 @@ body {
 .cdk-drag-animating {
   transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
 }
+
+/* Delta 003 — global visible-focus system (WCAG 2.2 AA 2.4.7/2.4.13).
+   Single accent token, legible on all dark wells including SVG nodes. */
+:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+g[tabindex]:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 4px;
+}
+
+/* Delta 003 — honor reduced-motion preferences globally. */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot,
+  .node-down,
+  .node-degraded,
+  .edge-flow,
+  .cdk-drag-animating {
+    animation: none !important;
+    transition: none !important;
+  }
+}

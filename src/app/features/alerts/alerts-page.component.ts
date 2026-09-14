@@ -3,6 +3,7 @@ import {
   Component,
   OnDestroy,
   OnInit,
+  type Signal,
   computed,
   inject,
 } from '@angular/core';
@@ -34,7 +35,7 @@ import { IncidentListComponent } from './incident-list.component';
         } @placeholder {
           <div
             data-testid="incident-placeholder"
-            class="h-[220px] animate-pulse rounded-lg bg-slate-800/40 ring-1 ring-white/5 xl:col-span-2"
+            class="h-[220px] animate-pulse rounded-lg bg-slate-800/40 ring-1 ring-white/5 motion-reduce:animate-none xl:col-span-2"
           ></div>
         }
       </div>
@@ -45,10 +46,8 @@ export class AlertsPageComponent implements OnInit, OnDestroy {
   private readonly engine = inject(AlertEngineService);
   private readonly store = inject(CoreStore);
 
-  readonly firingCount = computed(
-    () => this.store.incidents().filter((i) => i.status === 'firing').length,
-  );
-  readonly rulesCount = computed(() => this.store.rules().length);
+  readonly firingCount: Signal<number> = this.store.activeAlertsCount;
+  readonly rulesCount: Signal<number> = computed(() => this.store.rules().length);
 
   ngOnInit(): void {
     this.engine.start();

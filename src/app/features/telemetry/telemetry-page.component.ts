@@ -9,11 +9,18 @@ import {
 import { NgClass } from '@angular/common';
 import { CoreStore } from '../../core/store/core-store.service';
 import { PageHeaderComponent } from '../../shared/ui/page-header/page-header.component';
+import { resolveThresholds } from '../../core/models/metric-thresholds.model';
+import type { ThresholdLines } from '../../shared/ui/metric-chart/metric-chart.directive';
 import type {
   MetricKind,
   MetricUnit,
   TelemetryMetric,
 } from '../../core/models/telemetry-metric.model';
+import {
+  formatSummary,
+  summarizeWindow,
+  describeSeriesForScreenReader,
+} from '../../core/utils/format-metric';
 import { MetricChartDirective } from '../../shared/ui/metric-chart/metric-chart.directive';
 
 export type WindowSec = 10 | 30 | 60;
@@ -93,14 +100,25 @@ function readStoredWindow(): WindowSec {
               <span class="font-mono text-[11px] font-normal text-slate-400"
                 >({{ card.unit }})</span
               >
+              <span
+                [attr.data-testid]="'summary-' + card.kind"
+                aria-live="off"
+                class="ml-2 font-mono text-[11px] font-normal normal-case text-slate-300"
+                >{{ summaries()[card.kind] }}</span
+              >
             </h3>
+            <p class="sr-only" [attr.data-testid]="'chart-alt-' + card.kind">
+              {{ altTexts()[card.kind] }}
+            </p>
             @defer (on viewport) {
               @if (series()[card.kind].length > 0) {
                 <div
                   appMetricChart
                   [data]="series()[card.kind]"
                   [unit]="card.unit"
-                  class="h-[200px] rounded-md bg-[#030712] p-2 ring-1 ring-white/5"
+                  [thresholds]="thresholdLines()[card.kind]"
+                  [label]="card.title + ' chart'"
+                  class="relative h-[200px] rounded-md bg-[#030712] p-2 ring-1 ring-white/5"
                 ></div>
               } @else {
                 <p
@@ -111,16 +129,13 @@ function readStoredWindow(): WindowSec {
               }
             } @placeholder {
               <div
-                class="h-[200px] animate-pulse rounded-md bg-slate-800/40 ring-1 ring-white/5"
+                class="h-[200px] animate-pulse rounded-md bg-slate-800/40 ring-1 ring-white/5 motion-reduce:animate-none"
                 aria-hidden="true"
               ></div>
             }
           </section>
         }
       </div>
-      <p class="mt-4 font-mono text-[11px] leading-4 text-slate-400">
-        Values derived from market stream + simulator — not real infrastructure probes.
-      </p>
     </section>
   `,
 })
@@ -146,6 +161,47 @@ export class TelemetryPageComponent {
       latency: this.full.latency().slice(-n),
       throughput: this.full.throughput().slice(-n),
     };
+  });
+
+  readonly thresholdLines = computed((): Record<MetricKind, ThresholdLines> => {
+    const rules = this.store.rules();
+    const out = {} as Record<MetricKind, ThresholdLines>;
+    for (const card of CARDS) {
+      const t = resolveThresholds(card.kind, rules);
+      out[card.kind] = { warn: t.warn, crit: t.crit, direction: t.direction };
+    }
+    return out;
+  });
+
+  readonly summaries = computed((): Record<MetricKind, string> => {
+    const rows = this.series();
+    const out = {} as Record<MetricKind, string>;
+    for (const card of CARDS) {
+      const window = rows[card.kind];
+      if (window.length === 0) {
+        out[card.kind] = `Awaiting stream… (${card.unit})`;
+        continue;
+      }
+      const s = summarizeWindow(window);
+      out[card.kind] = formatSummary(s.current, s.delta, s.arrow, card.unit);
+    }
+    return out;
+  });
+
+  /** Screen-reader data alternative per card (delta 003) — charts stay non-interactive. */
+  readonly altTexts = computed((): Record<MetricKind, string> => {
+    const rows = this.series();
+    const lines = this.thresholdLines();
+    const out = {} as Record<MetricKind, string>;
+    for (const card of CARDS) {
+      out[card.kind] = describeSeriesForScreenReader(
+        card.title,
+        card.unit,
+        rows[card.kind],
+        lines[card.kind],
+      );
+    }
+    return out;
   });
 
   constructor() {

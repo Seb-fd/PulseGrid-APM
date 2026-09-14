@@ -68,6 +68,7 @@ function thresholdRangeValidator(group: AbstractControl): ValidationErrors | nul
             formControlName="name"
             data-testid="rule-name"
             [attr.aria-invalid]="form.controls['name'].invalid"
+            aria-describedby="error-name-text"
             class="mt-1.5 h-8 w-full rounded-md border border-slate-800 bg-[#030712] px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
           />
         </label>
@@ -102,6 +103,7 @@ function thresholdRangeValidator(group: AbstractControl): ValidationErrors | nul
             formControlName="threshold"
             data-testid="rule-threshold"
             [attr.aria-invalid]="form.controls['threshold'].invalid"
+            aria-describedby="error-threshold-text"
             class="mt-1.5 h-8 w-full rounded-md border border-slate-800 bg-[#030712] px-2.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
           />
         </label>
@@ -112,6 +114,7 @@ function thresholdRangeValidator(group: AbstractControl): ValidationErrors | nul
             formControlName="durationSec"
             data-testid="rule-duration"
             [attr.aria-invalid]="form.controls['durationSec'].invalid"
+            aria-describedby="error-duration-text"
             class="mt-1.5 h-8 w-full rounded-md border border-slate-800 bg-[#030712] px-2.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
           />
         </label>
@@ -159,12 +162,17 @@ function thresholdRangeValidator(group: AbstractControl): ValidationErrors | nul
           aria-live="polite"
         >
           @if (form.controls['name'].invalid) {
-            <p data-testid="error-name" class="font-mono text-[11px] font-medium text-rose-300">
+            <p
+              id="error-name-text"
+              data-testid="error-name"
+              class="font-mono text-[11px] font-medium text-rose-300"
+            >
               Name must be at least 3 characters.
             </p>
           }
           @if (form.controls['threshold'].invalid || form.hasError('thresholdRange')) {
             <p
+              id="error-threshold-text"
               data-testid="error-threshold"
               class="font-mono text-[11px] font-medium text-rose-300"
             >
@@ -172,7 +180,11 @@ function thresholdRangeValidator(group: AbstractControl): ValidationErrors | nul
             </p>
           }
           @if (form.controls['durationSec'].invalid) {
-            <p data-testid="error-duration" class="font-mono text-[11px] font-medium text-rose-300">
+            <p
+              id="error-duration-text"
+              data-testid="error-duration"
+              class="font-mono text-[11px] font-medium text-rose-300"
+            >
               Duration must be an integer between 5 and 300 seconds.
             </p>
           }
